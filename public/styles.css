@@ -1,0 +1,65 @@
+/* styles.css — Estilos complementarios a Tailwind para Counter App */
+
+/* Safe area para dispositivos con notch */
+.safe-area-top    { padding-top: env(safe-area-inset-top, 0px); }
+.safe-area-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* Scrollbar minimalista */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 999px; }
+.dark ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); }
+
+/* Deshabilita el doble-tap zoom en iOS */
+* { touch-action: manipulation; }
+
+/* Animaciones de feedback al tocar el valor del contador */
+@keyframes bump {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+.bump { animation: bump 0.18s cubic-bezier(0.16, 1, 0.3, 1); }
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%       { transform: translateX(-6px); }
+  60%       { transform: translateX(6px); }
+}
+.shake { animation: shake 0.25s ease-in-out; }
+
+/* Tarjeta de contador en el dashboard */
+.counter-card {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.counter-card:active { transform: scale(0.97); }
+
+/* Número del foco — garantiza fuente monoespaciada para evitar saltos */
+#focusValue {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+}
+
+/* Input sin flechas de incremento */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+input[type=number] { -moz-appearance: textfield; }
+
+/* Pill de color seleccionado */
+.color-pill {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+  border: 2.5px solid transparent;
+}
+.color-pill:hover  { transform: scale(1.1); }
+.color-pill.active { border-color: white; box-shadow: 0 0 0 2.5px currentColor; transform: scale(1.15); }
+
+/* Overlay oscuro durante carga */
+#loadingOverlay {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
