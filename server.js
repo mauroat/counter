@@ -55,6 +55,7 @@ db.exec(`
     step            REAL    NOT NULL DEFAULT 1,
     is_favorite     INTEGER NOT NULL DEFAULT 0,
     last_reset_year INTEGER NOT NULL DEFAULT 0,
+    sort_order      INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -72,13 +73,20 @@ db.exec(`
   );
 `);
 
-// ─── Migración: agrega last_reset_year a bases de datos existentes ────────────
+// ─── Migraciones de esquema ───────────────────────────────────────────────────
 try {
   db.exec('ALTER TABLE counters ADD COLUMN last_reset_year INTEGER NOT NULL DEFAULT 0');
 } catch (_) { /* columna ya existe, ignorar */ }
 
+try {
+  db.exec('ALTER TABLE counters ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+} catch (_) { /* columna ya existe, ignorar */ }
+
 // Inicializa last_reset_year = año actual en filas antiguas (DEFAULT 0 = sin inicializar)
 db.exec(`UPDATE counters SET last_reset_year = ${new Date().getFullYear()} WHERE last_reset_year = 0`);
+
+// Inicializa sort_order usando el id como base de orden natural
+db.exec('UPDATE counters SET sort_order = id WHERE sort_order = 0');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -201,7 +209,7 @@ app.get('/api/counters', authMiddleware, (req, res) => {
   const counters = db.prepare(`
     SELECT * FROM counters
     WHERE user_id = ?
-    ORDER BY is_favorite DESC, updated_at DESC
+    ORDER BY is_favorite DESC, sort_order ASC, id ASC
   `).all(req.userId);
 
   res.json(counters);
@@ -214,13 +222,39 @@ app.post('/api/counters', authMiddleware, (req, res) => {
     return res.status(400).json({ error: 'El nombre es requerido' });
   }
 
+  const { nextOrder } = db.prepare(
+    'SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextOrder FROM counters WHERE user_id = ?'
+  ).get(req.userId);
+
   const result = db.prepare(`
-    INSERT INTO counters (user_id, name, color, current_value, initial_value, step, last_reset_year)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(req.userId, name.trim(), color || '#6366f1', initial_value, initial_value, step, new Date().getFullYear());
+    INSERT INTO counters (user_id, name, color, current_value, initial_value, step, last_reset_year, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(req.userId, name.trim(), color || '#6366f1', initial_value, initial_value, step,
+         new Date().getFullYear(), nextOrder);
 
   const counter = db.prepare('SELECT * FROM counters WHERE id = ?').get(result.lastInsertRowid);
   res.status(201).json(counter);
+});
+
+/** PUT /api/counters/reorder — Persiste el nuevo orden de los contadores.
+ *  Body: { ids: [4, 1, 3, 2] }  (IDs en el orden deseado, favs primero)
+ *  Asigna sort_order = índice a cada ID recibido.
+ */
+app.put('/api/counters/reorder', authMiddleware, (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids requerido' });
+  }
+  const stmt = db.prepare('UPDATE counters SET sort_order = ? WHERE id = ? AND user_id = ?');
+  db.exec('BEGIN');
+  try {
+    ids.forEach((id, index) => stmt.run(index, id, req.userId));
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: err.message });
+  }
+  res.json({ success: true });
 });
 
 /** PUT /api/counters/:id — Actualiza nombre, color, step, is_favorite */
@@ -413,10 +447,16 @@ app.post('/api/counters/import', authMiddleware, upload.single('file'), (req, re
       .replace(/-export$/i, '').replace(/_export$/i, '')
       .replace(/\.(csv|tsv|txt)$/i, '').trim() || 'Importado';
 
+    // Calcula el próximo sort_order para ubicar los contadores importados al final
+    const { baseOrder } = db.prepare(
+      'SELECT COALESCE(MAX(sort_order), -1) + 1 AS baseOrder FROM counters WHERE user_id = ?'
+    ).get(req.userId);
+    let importSortOrder = baseOrder;
+
     // Prepara los statements fuera del loop para eficiencia
     const stmtInsertCounter = db.prepare(`
-      INSERT INTO counters (user_id, name, color, current_value, initial_value, step, last_reset_year)
-      VALUES (?, ?, ?, ?, ?, 1, ?)
+      INSERT INTO counters (user_id, name, color, current_value, initial_value, step, last_reset_year, sort_order)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
     `);
     const stmtInsertHistory = db.prepare(`
       INSERT INTO counter_history (counter_id, action, value_before, value_after, increment, timestamp)
@@ -461,7 +501,7 @@ app.post('/api/counters/import', authMiddleware, upload.single('file'), (req, re
         const initialValue = firstEntry ? (firstEntry.value - firstEntry.increment) : 0;
         const currentValue = lastEntry  ? lastEntry.value : initialValue;
 
-        const result    = stmtInsertCounter.run(req.userId, data.name, '#6366f1', currentValue, initialValue, new Date().getFullYear());
+        const result    = stmtInsertCounter.run(req.userId, data.name, '#6366f1', currentValue, initialValue, new Date().getFullYear(), importSortOrder++);
         const counterId = Number(result.lastInsertRowid); // Number() por si retorna BigInt
 
         for (let j = 0; j < data.entries.length; j++) {
@@ -481,6 +521,73 @@ app.post('/api/counters/import', authMiddleware, upload.single('file'), (req, re
 
   } catch (err) {
     console.error('[Import] Error:', err);
+    res.status(500).json({ error: `Error al importar: ${err.message}` });
+  }
+});
+
+// ─── Importación de historial a contador existente ───────────────────────────
+
+/**
+ * POST /api/counters/:id/import-history — Agrega registros históricos a un
+ * contador ya existente sin crear uno nuevo.
+ *
+ * Útil para cargar datos de años anteriores de contadores propios.
+ * No modifica current_value ni initial_value del contador.
+ */
+app.post('/api/counters/:id/import-history', authMiddleware, upload.single('file'), (req, res) => {
+  const counter = db.prepare('SELECT * FROM counters WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.userId);
+  if (!counter) return res.status(404).json({ error: 'Contador no encontrado' });
+  if (!req.file)  return res.status(400).json({ error: 'Archivo CSV requerido' });
+
+  try {
+    const text   = req.file.buffer.toString('utf-8').replace(/^﻿/, '');
+    const lines  = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return res.status(400).json({ error: 'Archivo vacío o solo encabezado' });
+
+    const sep    = lines[0].includes('\t') ? '\t' : ',';
+    const header = lines[0].split(sep).map(h => h.trim().toLowerCase());
+
+    const col = {
+      timestamp: header.findIndex(h => h.includes('marca') || h.includes('timestamp')),
+      value:     header.findIndex(h => h.includes('valor') || h === 'value' || h === 'count'),
+      increment: header.findIndex(h => h === 'incremento' || h === 'increment' || h === 'delta' || h.startsWith('incr')),
+    };
+
+    const entries = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(sep);
+      if (cols.length < 2) continue;
+      const value     = parseFloat(cols[col.value     >= 0 ? col.value     : 3]) || 0;
+      const increment = col.increment >= 0 ? (parseFloat(cols[col.increment]) || 0) : 0;
+      const rawTs     = col.timestamp >= 0 ? (cols[col.timestamp] || '').trim() : '';
+      const ts        = rawTs.replace(/(\d{2}:\d{2}:\d{2})\.\d+/, '$1') || new Date().toISOString();
+      entries.push({ ts, value, increment });
+    }
+
+    if (entries.length === 0) return res.status(400).json({ error: 'Sin datos válidos en el archivo' });
+
+    const stmt = db.prepare(`
+      INSERT INTO counter_history (counter_id, action, value_before, value_after, increment, timestamp)
+      VALUES (?, 'import', ?, ?, ?, ?)
+    `);
+
+    db.exec('BEGIN');
+    try {
+      for (let j = 0; j < entries.length; j++) {
+        const e    = entries[j];
+        const prev = j === 0 ? (e.value - e.increment) : entries[j - 1].value;
+        stmt.run(counter.id, prev, e.value, e.increment, e.ts);
+      }
+      db.exec('COMMIT');
+    } catch (txErr) {
+      db.exec('ROLLBACK');
+      throw txErr;
+    }
+
+    res.json({ imported: entries.length });
+  } catch (err) {
+    console.error('[ImportHistory]', err);
     res.status(500).json({ error: `Error al importar: ${err.message}` });
   }
 });

@@ -217,6 +217,10 @@
             <button onclick="App.openHistoryModal()" class="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-medium transition-colors text-gray-800 dark:text-gray-200">
               <span class="text-lg">📋</span> Ver historial
             </button>
+            <label class="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-medium transition-colors text-gray-800 dark:text-gray-200 cursor-pointer">
+              <span class="text-lg">📥</span> Importar histórico (CSV)
+              <input type="file" accept=".csv,.tsv,.txt" onchange="App.importHistoryCSV(event)" class="hidden" />
+            </label>
             <button onclick="App.openAnalytics()" class="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-medium transition-colors text-gray-800 dark:text-gray-200">
               <span class="text-lg">📊</span> Ver análisis
             </button>
@@ -418,6 +422,7 @@
   <div id="toast" class="hidden fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] px-5 py-3 rounded-2xl bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-sm font-semibold shadow-2xl animate-fade-in whitespace-nowrap">
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
   <script src="/app.js"></script>
 </body>
