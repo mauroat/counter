@@ -23,6 +23,10 @@ const App = (() => {
   let analyticsChart1 = null;
   let analyticsChart2 = null;
 
+  // Instancias de SortableJS para drag-and-drop
+  let sortableFav = null;
+  let sortableAll = null;
+
   const COLORS = [
     '#6366f1', '#8b5cf6', '#ec4899', '#ef4444',
     '#f97316', '#eab308', '#22c55e', '#14b8a6',
@@ -207,6 +211,8 @@ const App = (() => {
 
     favs.forEach(c => favList.appendChild(buildCounterCard(c)));
     rest.forEach(c => counterList.appendChild(buildCounterCard(c)));
+
+    initSortable();
   }
 
   /**
@@ -216,7 +222,7 @@ const App = (() => {
    */
   function buildCounterCard(c) {
     const div = document.createElement('div');
-    div.className = 'counter-card flex items-center gap-3 pl-5 pr-3 py-4 rounded-3xl shadow-sm transition-transform duration-150';
+    div.className = 'counter-card flex items-center gap-2 pl-2 pr-3 py-4 rounded-3xl shadow-sm transition-transform duration-150';
     div.style.background = c.color;
     div.dataset.id = c.id;
 
@@ -227,6 +233,12 @@ const App = (() => {
       : '';
 
     div.innerHTML = `
+      <!-- Handle de arrastre (SortableJS lo usa como pivot) -->
+      <div class="drag-handle flex flex-col gap-[3px] px-2 py-3 cursor-grab active:cursor-grabbing shrink-0 select-none">
+        <span class="block w-[14px] h-[2px] rounded-full bg-white/40"></span>
+        <span class="block w-[14px] h-[2px] rounded-full bg-white/40"></span>
+        <span class="block w-[14px] h-[2px] rounded-full bg-white/40"></span>
+      </div>
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-1.5 mb-0.5">
           <p class="text-white/75 text-xs font-semibold truncate">${escapeHtml(c.name)}</p>
@@ -701,6 +713,79 @@ const App = (() => {
     showToast(`${data.imported} contador(es) importado(s) ✓`);
   }
 
+  // ─── Drag-and-drop / Reordenamiento ──────────────────────────────────────
+
+  /**
+   * Inicializa (o reinicia) SortableJS en ambas listas.
+   * El usuario arrastra desde el handle (≡) para reordenar.
+   * Al soltar, persiste el nuevo orden en el servidor.
+   */
+  function initSortable() {
+    if (typeof Sortable === 'undefined') return; // CDN no cargó aún
+
+    const opts = {
+      animation: 180,
+      easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+      handle: '.drag-handle',
+      ghostClass: 'sortable-ghost',
+      chosenClass: 'sortable-chosen',
+      onEnd: persistReorder,
+    };
+
+    if (sortableFav) sortableFav.destroy();
+    if (sortableAll) sortableAll.destroy();
+
+    sortableFav = new Sortable(document.getElementById('favList'),     opts);
+    sortableAll = new Sortable(document.getElementById('counterList'), opts);
+  }
+
+  /**
+   * Lee el orden actual del DOM y lo guarda en el servidor.
+   * Combina favoritos (primero) + regulares en un único array de IDs.
+   */
+  async function persistReorder() {
+    const favIds = [...document.querySelectorAll('#favList .counter-card')].map(el => Number(el.dataset.id));
+    const allIds = [...document.querySelectorAll('#counterList .counter-card')].map(el => Number(el.dataset.id));
+    const ids    = [...favIds, ...allIds];
+
+    // Actualiza el array local para mantener consistencia sin recargar
+    counters.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+
+    await api('PUT', '/api/counters/reorder', { ids });
+  }
+
+  // ─── Importar historial a contador existente ──────────────────────────────
+
+  /**
+   * Sube un CSV al endpoint /import-history del contador abierto en foco.
+   * Agrega los registros al historial sin crear un contador nuevo.
+   */
+  async function importHistoryCSV(event) {
+    if (!focusCounter) return;
+    const file = event.target.files[0];
+    if (!file) return;
+    event.target.value = '';
+
+    closeFocusDropdown();
+    const formData = new FormData();
+    formData.append('file', file);
+
+    showToast('Importando historial…', 6000);
+
+    const res  = await fetch(`/api/counters/${focusCounter.id}/import-history`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      showToast(data.error || 'Error al importar historial');
+      return;
+    }
+    showToast(`${data.imported} registros importados ✓`);
+  }
+
   // ─── Análisis ─────────────────────────────────────────────────────────────
 
   async function openAnalytics() {
@@ -942,6 +1027,7 @@ const App = (() => {
     closeAnalytics,
     prevAnalyticsYear,
     nextAnalyticsYear,
+    importHistoryCSV,
   };
 })();
 
