@@ -1,8 +1,17 @@
 /* styles.css — Estilos complementarios a Tailwind para Counter App */
 
-/* Safe area para dispositivos con notch */
-.safe-area-top    { padding-top: env(safe-area-inset-top, 0px); }
-.safe-area-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+/* Safe area para dispositivos con notch.
+   En modo standalone (app añadida al inicio) el contenido empieza desde
+   el borde superior real, por debajo de la barra de estado / Dynamic Island.
+   max() garantiza un mínimo de respaldo aunque iOS reporte un inset de 0. */
+.safe-area-top    { padding-top: max(env(safe-area-inset-top, 0px), 12px); }
+.safe-area-bottom { padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px); }
+
+/* Solo cuando corre como app instalada (standalone) reservamos más arriba,
+   para que los botones del header queden siempre tocables. */
+@media all and (display-mode: standalone) {
+  .safe-area-top { padding-top: max(env(safe-area-inset-top, 0px), 44px); }
+}
 
 /* Scrollbar minimalista */
 ::-webkit-scrollbar { width: 4px; }
