@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <title>Counter — Contador de Clics</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -105,8 +106,8 @@
   <div id="mainScreen" class="hidden min-h-screen flex flex-col max-w-lg mx-auto">
 
     <!-- Header -->
-    <header class="sticky top-0 z-30 bg-gray-50/80 dark:bg-gray-950/80 backdrop-blur-xl border-b border-gray-200/60 dark:border-gray-800/60">
-      <div class="flex items-center justify-between px-4 py-3 safe-area-top">
+    <header class="sticky top-0 z-30 bg-gray-50/80 dark:bg-gray-950/80 backdrop-blur-xl border-b border-gray-200/60 dark:border-gray-800/60 safe-area-top">
+      <div class="flex items-center justify-between px-4 py-3">
         <div>
           <h1 class="text-2xl font-black tracking-tight">Contadores</h1>
           <p id="welcomeMsg" class="text-xs text-gray-400 dark:text-gray-500"></p>
