@@ -71,6 +71,15 @@ db.exec(`
     timestamp    TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
     FOREIGN KEY (counter_id) REFERENCES counters(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS separators (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    title      TEXT    NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
 `);
 
 // ─── Migraciones de esquema ───────────────────────────────────────────────────
@@ -236,19 +245,40 @@ app.post('/api/counters', authMiddleware, (req, res) => {
   res.status(201).json(counter);
 });
 
-/** PUT /api/counters/reorder — Persiste el nuevo orden de los contadores.
- *  Body: { ids: [4, 1, 3, 2] }  (IDs en el orden deseado, favs primero)
- *  Asigna sort_order = índice a cada ID recibido.
+/** PUT /api/counters/reorder — Persiste el nuevo orden de la lista.
+ *
+ *  Acepta dos formatos en el body:
+ *   1) { ids: [4, 1, 3, 2] }                       (legacy: solo contadores)
+ *   2) { items: [{type:'counter',id:4}, {type:'separator',id:2}, ...] }
+ *
+ *  Asigna sort_order = índice a cada item en su tabla correspondiente,
+ *  de modo que contadores y separadores comparten una misma secuencia de orden.
  */
 app.put('/api/counters/reorder', authMiddleware, (req, res) => {
-  const { ids } = req.body;
-  if (!Array.isArray(ids) || ids.length === 0) {
-    return res.status(400).json({ error: 'ids requerido' });
+  const { ids, items } = req.body;
+
+  // Normaliza ambos formatos a una lista uniforme de {type, id}
+  let list = [];
+  if (Array.isArray(items) && items.length > 0) {
+    list = items;
+  } else if (Array.isArray(ids) && ids.length > 0) {
+    list = ids.map(id => ({ type: 'counter', id }));
+  } else {
+    return res.status(400).json({ error: 'items o ids requerido' });
   }
-  const stmt = db.prepare('UPDATE counters SET sort_order = ? WHERE id = ? AND user_id = ?');
+
+  const stmtCounter   = db.prepare('UPDATE counters   SET sort_order = ? WHERE id = ? AND user_id = ?');
+  const stmtSeparator = db.prepare('UPDATE separators SET sort_order = ? WHERE id = ? AND user_id = ?');
+
   db.exec('BEGIN');
   try {
-    ids.forEach((id, index) => stmt.run(index, id, req.userId));
+    list.forEach((item, index) => {
+      if (item.type === 'separator') {
+        stmtSeparator.run(index, item.id, req.userId);
+      } else {
+        stmtCounter.run(index, item.id, req.userId);
+      }
+    });
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -290,6 +320,60 @@ app.delete('/api/counters/:id', authMiddleware, (req, res) => {
   if (!counter) return res.status(404).json({ error: 'Contador no encontrado' });
 
   db.prepare('DELETE FROM counters WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// ─── Separadores (divisiones para agrupar contadores) ─────────────────────────
+
+/** GET /api/separators — Devuelve todos los separadores del usuario */
+app.get('/api/separators', authMiddleware, (req, res) => {
+  const separators = db.prepare(`
+    SELECT * FROM separators WHERE user_id = ? ORDER BY sort_order ASC, id ASC
+  `).all(req.userId);
+  res.json(separators);
+});
+
+/** POST /api/separators — Crea un separador nuevo (se ubica al final de la lista) */
+app.post('/api/separators', authMiddleware, (req, res) => {
+  const { title = '' } = req.body;
+
+  // El próximo sort_order debe considerar tanto contadores como separadores
+  const { nextOrder } = db.prepare(`
+    SELECT COALESCE(MAX(o), -1) + 1 AS nextOrder FROM (
+      SELECT MAX(sort_order) AS o FROM counters   WHERE user_id = ?
+      UNION ALL
+      SELECT MAX(sort_order) AS o FROM separators WHERE user_id = ?
+    )
+  `).get(req.userId, req.userId);
+
+  const result = db.prepare(
+    'INSERT INTO separators (user_id, title, sort_order) VALUES (?, ?, ?)'
+  ).run(req.userId, String(title).trim(), nextOrder);
+
+  const separator = db.prepare('SELECT * FROM separators WHERE id = ?').get(result.lastInsertRowid);
+  res.status(201).json(separator);
+});
+
+/** PUT /api/separators/:id — Actualiza el título de un separador */
+app.put('/api/separators/:id', authMiddleware, (req, res) => {
+  const sep = db.prepare('SELECT * FROM separators WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.userId);
+  if (!sep) return res.status(404).json({ error: 'Separador no encontrado' });
+
+  const { title } = req.body;
+  db.prepare('UPDATE separators SET title = COALESCE(?, title) WHERE id = ?')
+    .run(title !== undefined ? String(title).trim() : null, req.params.id);
+
+  res.json(db.prepare('SELECT * FROM separators WHERE id = ?').get(req.params.id));
+});
+
+/** DELETE /api/separators/:id — Elimina un separador */
+app.delete('/api/separators/:id', authMiddleware, (req, res) => {
+  const sep = db.prepare('SELECT * FROM separators WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.userId);
+  if (!sep) return res.status(404).json({ error: 'Separador no encontrado' });
+
+  db.prepare('DELETE FROM separators WHERE id = ?').run(req.params.id);
   res.json({ success: true });
 });
 

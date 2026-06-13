@@ -10,6 +10,7 @@ const App = (() => {
   let token    = localStorage.getItem('counter_token') || null;
   let username = localStorage.getItem('counter_user') || '';
   let counters = [];
+  let separators = [];
   let focusCounter = null;
   let authMode     = 'login';
   let editMode     = false;
@@ -156,6 +157,7 @@ const App = (() => {
     token    = null;
     username = '';
     counters = [];
+    separators = [];
     focusCounter = null;
     localStorage.removeItem('counter_token');
     localStorage.removeItem('counter_user');
@@ -172,13 +174,17 @@ const App = (() => {
     showScreen('mainScreen');
     document.getElementById('welcomeMsg').textContent = `Hola, ${username} 👋`;
 
-    const res = await api('GET', '/api/counters');
+    const [res, sepRes] = await Promise.all([
+      api('GET', '/api/counters'),
+      api('GET', '/api/separators'),
+    ]);
     if (!res.ok) {
       if (res.status === 401) { logout(); return; }
       showToast('Error cargando contadores');
       return;
     }
-    counters = res.data;
+    counters   = res.data;
+    separators = sepRes.ok ? sepRes.data : [];
     renderDashboard();
   }
 
@@ -207,10 +213,24 @@ const App = (() => {
     const rest = counters.filter(c => !c.is_favorite);
 
     favSection.classList.toggle('hidden', favs.length === 0);
-    allSectionLabel.classList.toggle('hidden', favs.length === 0 || rest.length === 0);
+    allSectionLabel.classList.toggle('hidden', favs.length === 0 || (rest.length === 0 && separators.length === 0));
 
     favs.forEach(c => favList.appendChild(buildCounterCard(c)));
-    rest.forEach(c => counterList.appendChild(buildCounterCard(c)));
+
+    // Lista "Todos": intercala contadores no-favoritos y separadores
+    // ordenados por su sort_order compartido.
+    const items = [
+      ...rest.map(c       => ({ type: 'counter',   sort_order: c.sort_order ?? 0, data: c })),
+      ...separators.map(s => ({ type: 'separator', sort_order: s.sort_order ?? 0, data: s })),
+    ].sort((a, b) => a.sort_order - b.sort_order);
+
+    items.forEach(item => {
+      counterList.appendChild(
+        item.type === 'separator'
+          ? buildSeparator(item.data)
+          : buildCounterCard(item.data)
+      );
+    });
 
     initSortable();
   }
@@ -265,6 +285,47 @@ const App = (() => {
     div.querySelector('.card-open-btn').addEventListener('click', (e) => {
       e.stopPropagation();
       openFocus(c.id);
+    });
+
+    return div;
+  }
+
+  /**
+   * Construye un separador (división para agrupar contadores).
+   * - Handle ≡ para arrastrar (misma clase que las tarjetas).
+   * - Tap en el título → renombrar.
+   * - Botón 🗑 → eliminar.
+   */
+  function buildSeparator(s) {
+    const div = document.createElement('div');
+    div.className = 'separator-row flex items-center gap-2 pl-2 pr-2 py-1 select-none';
+    div.dataset.sepId = s.id;
+
+    const title = (s.title || '').trim();
+    div.innerHTML = `
+      <div class="drag-handle flex flex-col gap-[3px] px-2 py-3 cursor-grab active:cursor-grabbing shrink-0 select-none">
+        <span class="block w-[14px] h-[2px] rounded-full bg-gray-300 dark:bg-gray-600"></span>
+        <span class="block w-[14px] h-[2px] rounded-full bg-gray-300 dark:bg-gray-600"></span>
+        <span class="block w-[14px] h-[2px] rounded-full bg-gray-300 dark:bg-gray-600"></span>
+      </div>
+      <div class="sep-title flex-1 flex items-center gap-2 min-w-0 cursor-pointer py-1.5">
+        <span class="h-px flex-1 bg-gray-200 dark:bg-gray-700/70 rounded"></span>
+        <span class="text-xs font-bold uppercase tracking-widest whitespace-nowrap ${title ? 'text-gray-400 dark:text-gray-500' : 'text-gray-300 dark:text-gray-600 italic'}">
+          ${title ? escapeHtml(title) : 'Sin título'}
+        </span>
+        <span class="h-px flex-1 bg-gray-200 dark:bg-gray-700/70 rounded"></span>
+      </div>
+      <button class="sep-del-btn w-8 h-8 rounded-full flex items-center justify-center text-gray-300 hover:text-red-400 dark:text-gray-600 dark:hover:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-800 active:scale-90 transition-all shrink-0">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    `;
+
+    div.querySelector('.sep-title').addEventListener('click', () => renameSeparator(s.id));
+    div.querySelector('.sep-del-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteSeparator(s.id);
     });
 
     return div;
@@ -587,6 +648,51 @@ const App = (() => {
     showToast('Contador eliminado');
   }
 
+  // ─── Separadores ──────────────────────────────────────────────────────────
+
+  /** Crea un separador nuevo al final de la lista y pide su título. */
+  async function addSeparator() {
+    dashMenuOpen = false;
+    document.getElementById('dropdownMenu').classList.add('hidden');
+
+    const title = (prompt('Título del separador (opcional):', '') || '').trim();
+
+    const res = await api('POST', '/api/separators', { title });
+    if (!res.ok) { showToast('Error al crear separador'); return; }
+
+    separators.push(res.data);
+    renderDashboard();
+    showToast('Separador agregado ✓');
+  }
+
+  /** Renombra un separador existente. */
+  async function renameSeparator(id) {
+    const sep = separators.find(s => s.id === id);
+    if (!sep) return;
+
+    const title = prompt('Título del separador:', sep.title || '');
+    if (title === null) return; // canceló
+
+    const res = await api('PUT', `/api/separators/${id}`, { title: title.trim() });
+    if (!res.ok) { showToast('Error al renombrar'); return; }
+
+    const idx = separators.findIndex(s => s.id === id);
+    if (idx !== -1) separators[idx] = res.data;
+    renderDashboard();
+  }
+
+  /** Elimina un separador (no afecta a los contadores). */
+  async function deleteSeparator(id) {
+    if (!confirm('¿Eliminar este separador? Los contadores no se borran.')) return;
+
+    const res = await api('DELETE', `/api/separators/${id}`);
+    if (!res.ok) { showToast('Error al eliminar separador'); return; }
+
+    separators = separators.filter(s => s.id !== id);
+    renderDashboard();
+    showToast('Separador eliminado');
+  }
+
   // ─── Historial ────────────────────────────────────────────────────────────
 
   async function openHistoryModal() {
@@ -744,14 +850,27 @@ const App = (() => {
    * Combina favoritos (primero) + regulares en un único array de IDs.
    */
   async function persistReorder() {
-    const favIds = [...document.querySelectorAll('#favList .counter-card')].map(el => Number(el.dataset.id));
-    const allIds = [...document.querySelectorAll('#counterList .counter-card')].map(el => Number(el.dataset.id));
-    const ids    = [...favIds, ...allIds];
+    // Favoritos: solo contadores, van primero en el orden global.
+    const favItems = [...document.querySelectorAll('#favList .counter-card')]
+      .map(el => ({ type: 'counter', id: Number(el.dataset.id) }));
 
-    // Actualiza el array local para mantener consistencia sin recargar
-    counters.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    // Lista "Todos": contadores y separadores intercalados, en orden del DOM.
+    const allItems = [...document.querySelectorAll('#counterList > *')]
+      .map(el => el.dataset.sepId !== undefined
+        ? { type: 'separator', id: Number(el.dataset.sepId) }
+        : { type: 'counter',   id: Number(el.dataset.id) })
+      .filter(it => Number.isFinite(it.id));
 
-    await api('PUT', '/api/counters/reorder', { ids });
+    const items = [...favItems, ...allItems];
+
+    // Refleja el nuevo orden en los arrays locales para no recargar.
+    const orderIndex = (type, id) =>
+      items.findIndex(it => it.type === type && it.id === id);
+    counters.sort((a, b)   => orderIndex('counter', a.id)   - orderIndex('counter', b.id));
+    counters.forEach(c => { c.sort_order = orderIndex('counter', c.id); });
+    separators.forEach(s => { s.sort_order = orderIndex('separator', s.id); });
+
+    await api('PUT', '/api/counters/reorder', { items });
   }
 
   // ─── Importar historial a contador existente ──────────────────────────────
@@ -1023,6 +1142,7 @@ const App = (() => {
     importCSV,
     openHistoryModal,
     closeHistoryModal,
+    addSeparator,
     openAnalytics,
     closeAnalytics,
     prevAnalyticsYear,
